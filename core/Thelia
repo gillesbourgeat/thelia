@@ -96,6 +96,6 @@ if (!file_exists(getTheliaDatabaseConfigFile($_SERVER['APP_DEBUG']))) {
 }
 // end for Thelia not installed
 
-$thelia = new Thelia($_SERVER['APP_ENV'], (bool) $_SERVER['APP_DEBUG']);
+$thelia = new App\Kernel($_SERVER['APP_ENV'], (bool) $_SERVER['APP_DEBUG']);
 $application = new Application($thelia);
 $application->run($input);

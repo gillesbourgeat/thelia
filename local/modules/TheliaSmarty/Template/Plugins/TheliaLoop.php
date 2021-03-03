@@ -73,7 +73,7 @@ class TheliaLoop extends AbstractSmartyPlugin
     public function __construct(
         ContainerInterface $container,
         RequestStack $requestStack,
-        EventDispatcher $eventDispatcher,
+        EventDispatcherInterface $eventDispatcher,
         SecurityContext $securityContext,
         TranslatorInterface $translator,
         bool $kernelDebug,

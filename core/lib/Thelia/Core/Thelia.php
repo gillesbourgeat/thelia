@@ -24,11 +24,14 @@ namespace Thelia\Core;
 use Propel\Runtime\Connection\ConnectionInterface;
 use Propel\Runtime\DataFetcher\PDODataFetcher;
 use Propel\Runtime\Propel;
+use Symfony\Bundle\FrameworkBundle\Kernel\MicroKernelTrait;
 use Symfony\Component\Config\FileLocator;
 use Symfony\Component\Config\Loader\LoaderInterface;
 use Symfony\Component\DependencyInjection\ContainerAwareInterface;
 use Symfony\Component\DependencyInjection\ContainerBuilder;
+use Symfony\Component\DependencyInjection\ContainerInterface;
 use Symfony\Component\DependencyInjection\Definition;
+use Symfony\Component\DependencyInjection\Loader\Configurator\ContainerConfigurator;
 use Symfony\Component\DependencyInjection\Loader\PhpFileLoader;
 use Symfony\Component\DependencyInjection\ParameterBag\ParameterBag;
 use Symfony\Component\DependencyInjection\Reference;
@@ -37,7 +40,10 @@ use Symfony\Component\EventDispatcher\EventDispatcher;
 use Symfony\Component\EventDispatcher\EventSubscriberInterface;
 use Symfony\Component\Finder\Finder;
 use Symfony\Component\Form\FormExtensionInterface;
+use Symfony\Component\HttpFoundation\Request;
+use Symfony\Component\HttpFoundation\Session\SessionInterface;
 use Symfony\Component\HttpKernel\Controller\ArgumentValueResolverInterface;
+use Symfony\Component\HttpKernel\HttpKernelInterface;
 use Symfony\Component\HttpKernel\Kernel;
 use Symfony\Contracts\EventDispatcher\Event;
 use Thelia\Condition\Implementation\ConditionInterface;
@@ -61,6 +67,8 @@ use TheliaSmarty\Template\SmartyParser;
 
 class Thelia extends Kernel
 {
+    use MicroKernelTrait;
+
     public const THELIA_VERSION = '2.4.3';
 
     protected $propelSchemaLocator;
@@ -80,6 +88,29 @@ class Thelia extends Kernel
         if ($debug) {
             Debug::enable();
         }
+    }
+
+
+    /**
+     * Configures the container.
+     *
+     * You can register extensions:
+     *
+     *     $c->extension('framework', [
+     *         'secret' => '%secret%'
+     *     ]);
+     *
+     * Or services:
+     *
+     *     $c->services()->set('halloween', 'FooBundle\HalloweenProvider');
+     *
+     * Or parameters:
+     *
+     *     $c->parameters()->set('halloween', 'lot of fun');
+     */
+    protected function configureContainer(ContainerConfigurator $c): void
+    {
+
     }
 
     public static function isInstalled()
@@ -299,6 +330,54 @@ class Thelia extends Kernel
         }
     }
 
+    private function preBoot(): ContainerInterface
+    {
+        if ($this->debug) {
+            $this->startTime = microtime(true);
+        }
+        if ($this->debug && !isset($_ENV['SHELL_VERBOSITY']) && !isset($_SERVER['SHELL_VERBOSITY'])) {
+            putenv('SHELL_VERBOSITY=3');
+            $_ENV['SHELL_VERBOSITY'] = 3;
+            $_SERVER['SHELL_VERBOSITY'] = 3;
+        }
+
+        $this->initializeBundles();
+        $this->initializeContainer();
+
+        $container = $this->container;
+
+        if ($container->hasParameter('kernel.trusted_hosts') && $trustedHosts = $container->getParameter('kernel.trusted_hosts')) {
+            Request::setTrustedHosts($trustedHosts);
+        }
+
+        if ($container->hasParameter('kernel.trusted_proxies') && $container->hasParameter('kernel.trusted_headers') && $trustedProxies = $container->getParameter('kernel.trusted_proxies')) {
+            Request::setTrustedProxies(\is_array($trustedProxies) ? $trustedProxies : array_map('trim', explode(',', $trustedProxies)), $container->getParameter('kernel.trusted_headers'));
+        }
+
+        return $container;
+    }
+
+    public function handle(Request $request, int $type = HttpKernelInterface::MASTER_REQUEST, bool $catch = true)
+    {
+
+        if (!$this->booted) {
+            $container = $this->container ?? $this->preBoot();
+
+            if ($container->has('http_cache')) {
+                return $container->get('http_cache')->handle($request, $type, $catch);
+            }
+        }
+
+        $this->boot();
+
+        dump($this->getContainer());
+        exit;
+        $session = $this->getContainer()->get(SessionInterface::class);
+        $request->setSession($session);
+
+        return parent::handle($request, $type, $catch);
+    }
+
     /**
      * Load some configuration
      * Initialize all plugins.
@@ -312,7 +391,6 @@ class Thelia extends Kernel
         $phpLoader->load('services.php');
 
         $autoconfiguredInterfaces = [
-            EventSubscriberInterface::class => 'kernel.event_subscriber',
             SerializerInterface::class => 'thelia.serializer',
             ArchiverInterface::class => 'thelia.archiver',
             FormExtensionInterface::class => 'thelia.forms.extension',
@@ -322,7 +400,6 @@ class Thelia extends Kernel
             CouponInterface::class => 'thelia.coupon.addCoupon',
             ConditionInterface::class => 'thelia.coupon.addCondition',
             ControllerInterface::class => 'controller.service_arguments',
-            ArgumentValueResolverInterface::class => 'controller.argument_value_resolver',
         ];
 
         foreach ($autoconfiguredInterfaces as $interfaceClass => $tag) {
@@ -611,40 +688,22 @@ class Thelia extends Kernel
     }
 
     /**
-     * return available bundle.
-     *
-     * Part of Symfony\Component\HttpKernel\KernelInterface
-     *
-     * @return Bundle\TheliaBundle[] an array of bundle instances
+     * {@inheritdoc}
      */
-    public function registerBundles()
+    public function registerBundles(): iterable
     {
-        $bundles = [
-            /* TheliaBundle contain all the dependency injection description */
-            new Bundle\TheliaBundle(),
+        $contents = [
+            Bundle\TheliaBundle::class => ['all' => true]
         ];
 
-        /*
-         * OTHER CORE BUNDLE CAN BE DECLARE HERE AND INITIALIZE WITH SPECIFIC CONFIGURATION
-         *
-         * HOW TO DECLARE OTHER BUNDLE ? ETC
-         */
+        if (file_exists(THELIA_ROOT .'config/bundles.php')) {
+            $contents = array_merge($contents, require THELIA_ROOT.'config/bundles.php');
+        }
 
-        return $bundles;
-    }
-
-    /**
-     * Loads the container configuration.
-     *
-     * part of Symfony\Component\HttpKernel\KernelInterface
-     *
-     * @param LoaderInterface $loader A LoaderInterface instance
-     *
-     * @api
-     */
-    public function registerContainerConfiguration(LoaderInterface $loader): void
-    {
-        // Nothing is load here but it's possible to load container configuration here.
-        // exemple in sf2 : $loader->load(__DIR__.'/config/config_'.$this->getEnvironment().'.yml');
+        foreach ($contents as $class => $envs) {
+            if ($envs[$this->environment] ?? $envs['all'] ?? false) {
+                yield new $class();
+            }
+        }
     }
 }
